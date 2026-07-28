@@ -1,0 +1,124 @@
+pipeline {
+
+    agent any
+
+    tools {
+        jdk 'JDK21'
+        maven 'maven3'
+    }
+
+    environment {
+        IMAGE_NAME   = "sreerx/products-api"
+        IMAGE_TAG    = "${BUILD_NUMBER}"
+        AWS_REGION   = "ap-south-1"
+        CLUSTER_NAME = "mycluster-cluster4"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                cleanWs()
+
+                git branch: 'main',
+                url: 'https://github.com/Sreerux/project3-source.git'
+            }
+        }
+
+        stage('Verify Source') {
+            steps {
+                sh '''
+                pwd
+                ls -la
+                '''
+            }
+        }
+
+        stage('Debug Dockerfile') {
+            steps {
+                sh '''
+                echo "===== Dockerfile ====="
+                cat Dockerfile
+
+                echo "===== Repository Files ====="
+                ls -R
+                '''
+            }
+        }
+
+        stage('Build Application') {
+            steps {
+                sh '''
+                mvn clean package -DskipTests
+                ls -lh target/
+                '''
+            }
+        }
+
+        stage('Build & Push Docker Image') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'dockerhub-creds',
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )
+                ]) {
+
+                    sh '''
+                    docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
+                    docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest
+
+                    echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
+
+                    docker push ${IMAGE_NAME}:${IMAGE_TAG}
+                    docker push ${IMAGE_NAME}:latest
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy to EKS') {
+            steps {
+                sh '''
+                aws eks update-kubeconfig \
+                --region ${AWS_REGION} \
+                --name ${CLUSTER_NAME}
+
+                kubectl get nodes
+
+                kubectl apply -f Deployment.yml
+
+                kubectl rollout restart deployment/products-api
+
+                kubectl rollout status deployment/products-api
+                '''
+            }
+        }
+
+        stage('Verify Deployment') {
+            steps {
+                sh '''
+                kubectl get deployments
+                kubectl get pods -o wide
+                kubectl get svc
+                '''
+            }
+        }
+    }
+
+    post {
+
+        success {
+            echo "Application Successfully Deployed to Amazon EKS"
+        }
+
+        failure {
+            echo "Pipeline Failed"
+        }
+
+        always {
+            cleanWs()
+        }
+    }
+}
